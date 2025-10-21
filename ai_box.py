@@ -23,8 +23,8 @@ from PIL import Image, ImageDraw, ImageFont
 LANGUAGES = ['he-IL', 'en-US']  # Hebrew first, then English fallback
 TTS_LANG = 'iw'
 USE_OPENAI = False
-SCRIPT_UPDATE_URL = 'https://github.com/adibenishay86/PyCharmMiscProject/blob/main/ai_box.py'
-VERSION_URL = 'https://github.com/adibenishay86/PyCharmMiscProject/blob/main/version.txt'
+SCRIPT_UPDATE_URL = 'https://github.com/adibenishay86/aibox-public/blob/main/ai_box.py'
+VERSION_URL = 'https://github.com/adibenishay86/aibox-public/blob/main/version.txt'
 
 LOCAL_VERSION = "1.0.28"
 UPDATE_CHECK_INTERVAL = 300
