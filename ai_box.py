@@ -26,7 +26,7 @@ USE_OPENAI = False
 SCRIPT_UPDATE_URL = 'https://github.com/adibenishay86/aibox-public/blob/main/ai_box.py'
 VERSION_URL = 'https://github.com/adibenishay86/aibox-public/blob/main/version.txt'
 
-LOCAL_VERSION = "1.0.28"
+LOCAL_VERSION = "1.0.31"
 UPDATE_CHECK_INTERVAL = 300
 SESSION_EXPIRE = 300
 REST_API_PORT = 5000
@@ -60,7 +60,7 @@ if os.path.exists(env_file):
                 key, value = line.strip().split("=", 1)
                 if not os.getenv(key):  # Only set if not already in the environment
                     os.environ[key] = value
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
+GOOGLE_API_KEY = "AIzaSyDRbvvpXAd6AcYZrVcbzLRI26zNcBSjqa8"
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 
 # Debugging environment variables
@@ -68,10 +68,13 @@ logging.info(f"GOOGLE_API_KEY from environment: {os.getenv('GOOGLE_API_KEY')}")
 logging.info(f"GITHUB_TOKEN from environment: {os.getenv('GITHUB_TOKEN')}")
 
 # Initialize Google Gemini client
-if not GOOGLE_API_KEY:
-    logging.error("GOOGLE_API_KEY is not set. Exiting.")
-    sys.exit(1)
-genai_client = genai.Client(api_key=GOOGLE_API_KEY)
+if GOOGLE_API_KEY.startswith("otk_"):
+    logging.warning("Using injected one-time placeholder GOOGLE_API_KEY. This is NOT a valid Google Cloud API key.")
+    logging.warning("To enable Gemini, generate a real key and set the GOOGLE_API_KEY environment variable or update the key in configuration.")
+else:
+    genai_client = genai.Client(api_key=GOOGLE_API_KEY)
+    grounding_tool = types.Tool(google_search=types.GoogleSearch())
+    generate_config = types.GenerateContentConfig(tools=[grounding_tool])
 grounding_tool = types.Tool(google_search=types.GoogleSearch())
 generate_config = types.GenerateContentConfig(tools=[grounding_tool])
 
