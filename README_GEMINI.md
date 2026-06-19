@@ -14,12 +14,16 @@ To configure the app locally:
 - Put the key into `/etc/environment` as:
 
   GOOGLE_API_KEY=your_key_here
+  GROQ_API_KEY=your_groq_key_here
 
 - Or export it in your shell before running the app:
 
   export GOOGLE_API_KEY=your_key_here
+  export GROQ_API_KEY=your_groq_key_here
 
 - Or create a `.env` from `.env.example` and load it with your environment loader.
+
+- Do not commit the Groq API key or any other secret into source control.
 
 Programmatic key creation (optional helper)
 -----------------------------------------
