@@ -136,8 +136,8 @@ def check_for_update():
         if GITHUB_TOKEN:
             headers = {"Authorization": f"token {GITHUB_TOKEN}"}
 
-        version_raw_url = 'https://raw.githubusercontent.com/adibenishay86/PyCharmMiscProject/main/version.txt'
-        script_raw_url = 'https://raw.githubusercontent.com/adibenishay86/PyCharmMiscProject/main/ai_box.py'
+        version_raw_url = 'https://raw.githubusercontent.com/adibenishay86/aibox-public/main/version.txt'
+        script_raw_url = 'https://raw.githubusercontent.com/adibenishay86/aibox-public/main/ai_box.py'
 
         remote_version_resp = requests.get(version_raw_url, headers=headers, timeout=5)
         remote_version_resp.raise_for_status()
