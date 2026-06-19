@@ -12,8 +12,12 @@ from gtts import gTTS
 import subprocess
 from flask import Flask, request, jsonify
 import logging
-import google.genai as genai
-from google.genai import types
+try:
+    import google.genai as genai
+    from google.genai import types
+except ImportError:
+    genai = None
+    types = None
 import requests
 import re
 import ST7789
@@ -67,16 +71,20 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 logging.info(f"GOOGLE_API_KEY from environment: {os.getenv('GOOGLE_API_KEY')}")
 logging.info(f"GITHUB_TOKEN from environment: {os.getenv('GITHUB_TOKEN')}")
 
-# Initialize Google Gemini client
-if GOOGLE_API_KEY.startswith("otk_"):
-    logging.warning("Using injected one-time placeholder GOOGLE_API_KEY. This is NOT a valid Google Cloud API key.")
-    logging.warning("To enable Gemini, generate a real key and set the GOOGLE_API_KEY environment variable or update the key in configuration.")
-else:
-    genai_client = genai.Client(api_key=GOOGLE_API_KEY)
-    grounding_tool = types.Tool(google_search=types.GoogleSearch())
-    generate_config = types.GenerateContentConfig(tools=[grounding_tool])
-grounding_tool = types.Tool(google_search=types.GoogleSearch())
-generate_config = types.GenerateContentConfig(tools=[grounding_tool])
+# Initialize Google Gemini client (optional fallback / not used for agy CLI)
+genai_client = None
+grounding_tool = None
+generate_config = None
+if genai and types:
+    try:
+        if GOOGLE_API_KEY.startswith("otk_"):
+            logging.warning("Using injected one-time placeholder GOOGLE_API_KEY. This is NOT a valid Google Cloud API key.")
+        else:
+            genai_client = genai.Client(api_key=GOOGLE_API_KEY)
+            grounding_tool = types.Tool(google_search=types.GoogleSearch())
+            generate_config = types.GenerateContentConfig(tools=[grounding_tool])
+    except Exception as e:
+        logging.warning(f"Could not initialize genai client: {e}")
 
 # Initialize display
 disp = ST7789.ST7789()
@@ -351,59 +359,55 @@ def get_system_context_message():
 def query_google_ai(text, used_lang):
     global session_context
     try:
-        system_context_text = get_system_context_message()
-        if not session_context:
+        # Check if we should continue the conversation
+        use_continue = (session_context is not None and len(session_context) > 0)
+        
+        # Prepare the query text
+        # If starting a new session, we can prefix it with system context
+        if not use_continue:
+            system_context_text = get_system_context_message()
+            prompt = (
+                f"system context and previous questions context is: {system_context_text}\n"
+                f"The following message is the current user query to answer. "
+                f"Please answer it directly in the same language : {used_lang}.\n"
+                f"Please respond with plain text suitable for text-to-speech synthesis. Avoid special characters, emojis, or formatting. "
+                f"Use only textual characters and numbers, no asterisks or bullets.\n"
+                f"the question is: {text.strip()}"
+            )
+        else:
+            prompt = text.strip()
+            
+        logging.info(f"Querying local agy CLI (continue={use_continue}) with prompt: '{prompt[:100]}...'")
+        
+        # Run agy command
+        cmd = ["/home/rnela/.local/bin/agy", "--print", prompt]
+        if use_continue:
+            cmd.insert(1, "--continue")
+            
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        
+        if res.returncode != 0:
+            err_msg = res.stderr.strip()
+            logging.error(f"agy CLI returned error code {res.returncode}: {err_msg}")
+            if "Authentication required" in err_msg or "Authentication required" in res.stdout:
+                return "Please run the command 'agy' in the terminal on the Raspberry Pi once to authenticate your Google account.", session_context
+            return f"Error from agy CLI: {err_msg or res.stdout.strip()}", session_context
+            
+        answer = res.stdout.strip()
+        
+        # Keep local dummy session context so we know whether to use --continue
+        if session_context is None:
             session_context = []
-        full_context = [
-            {"parts": [{"text": "system context and previous questions context is: "+system_context_text}], "role": "user"}
-        ]
-        full_context.extend(session_context)
-        full_context.append({
-            "parts": [
-                {"text": (
-                    "The following message is the current user query to answer. "
-                    "Please answer it directly in the same language : "+used_lang +
-                    ". Use the previous text as context."
-                    + "Please respond with plain text suitable for text-to-speech synthesis. Avoid special characters, emojis, or formatting"
-                    + "use only textual characters and numbers, no asterisks or bullets"
-                )}
-            ],
-            "role": "user"
-        })
-        full_context.append({"parts": [{"text": "the question is: " + text.strip()}], "role": "user"})
-        if len(full_context) > MAX_CONTEXT_TURNS:
-            full_context = full_context[-MAX_CONTEXT_TURNS:]
-        logging.info("about to query Google AI with the following context: %s", full_context)
-        response = genai_client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=full_context,
-            config=generate_config
-        )
-        answer = response.text.strip()
-        new_session_context = []
-        for entry in full_context:
-            text_parts = entry["parts"][0]["text"].lower()
-            if (
-                "the following message is the current user query to answer" in text_parts
-            ):
-                continue
-            if text_parts.startswith(
-                "system context and previous questions context is:"
-            ):
-                continue
-            if entry["role"] == "user":
-                new_session_context.append(entry)
-            elif entry["role"] == "model":
-                new_session_context.append(entry)
-        new_session_context.append({"parts": [{"text": answer}], "role": "model"})
-        session_context = new_session_context[-MAX_CONTEXT_TURNS:]
-        logging.info(
-            f"Google Gemini AI Query cleaned session saving: \"{text}\" | Answer: \"{answer}\""
-        )
+        session_context.append({"parts": [{"text": text}], "role": "user"})
+        session_context.append({"parts": [{"text": answer}], "role": "model"})
+        if len(session_context) > MAX_CONTEXT_TURNS:
+            session_context = session_context[-MAX_CONTEXT_TURNS:]
+            
+        logging.info(f"agy CLI success. Answer: \"{answer}\"")
         return answer, session_context
     except Exception as e:
-        log_error("Google Gemini AI SDK with grounding (explicit instruction)", e)
-        return "There was an error with Google Gemini AI service.", session_context
+        log_error("agy CLI query failed", e)
+        return "There was an error communicating with the local agy CLI.", session_context
 
 
 def query_ai(text, used_lang):
