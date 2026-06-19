@@ -520,6 +520,17 @@ def query_groq_ai(text, used_lang):
             logging.warning(f"Groq Cloud returned empty response data: {result}")
             return None, session_context, False
 
+        # For Hebrew queries, extract only the Hebrew portion to remove English reasoning
+        if used_lang.startswith("he"):
+            # Find the last occurrence of a Hebrew text block (marked by Hebrew Unicode range)
+            hebrew_block = ""
+            for paragraph in answer.split("\n"):
+                if any("\u0590" <= c <= "\u05FF" for c in paragraph):
+                    hebrew_block = paragraph.strip()
+            if hebrew_block:
+                answer = hebrew_block
+                logging.info(f"Extracted Hebrew answer: {answer}")
+
         if session_context is None:
             session_context = []
         session_context.append({"parts": [{"text": text}], "role": "user"})
