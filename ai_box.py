@@ -84,8 +84,9 @@ if os.path.exists(env_file):
 GOOGLE_API_KEY = "AIzaSyDRbvvpXAd6AcYZrVcbzLRI26zNcBSjqa8"
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = "groq-1.5-mini"
-GROQ_API_URL = f"https://api.groq.com/v1/models/{GROQ_MODEL}/completions"
+GROQ_MODEL = "openai/gpt-oss-20b"
+GROQ_API_BASE = "https://api.groq.com/openai/v1"
+GROQ_API_URL = f"{GROQ_API_BASE}/responses"
 
 # Debugging environment variables
 logging.info(f"GOOGLE_API_KEY from environment: {os.getenv('GOOGLE_API_KEY')}")
@@ -383,7 +384,7 @@ def get_diagnostics():
     agy_available = os.path.exists(agy_path)
     try:
         groq_connectivity = "reachable"
-        with socket.create_connection(("api.groqcloud.com", 443), timeout=5):
+        with socket.create_connection(("api.groq.com", 443), timeout=5):
             pass
     except Exception as e:
         groq_connectivity = f"unreachable: {e}"
@@ -433,17 +434,18 @@ def query_groq_ai(text, used_lang):
             prompt = text.strip()
 
         payload = {
+            "model": GROQ_MODEL,
             "input": prompt,
-            "max_output_tokens": 512,
             "temperature": 0.2,
             "top_p": 0.95,
+            "max_output_tokens": 512,
         }
         headers = {
             "Authorization": f"Bearer {GROQ_API_KEY}",
             "Content-Type": "application/json",
         }
 
-        logging.info("Querying Groq Cloud as first priority")
+        logging.info(f"Querying Groq Cloud URL {GROQ_API_URL} as first priority")
         response = requests.post(GROQ_API_URL, json=payload, headers=headers, timeout=30)
         if response.status_code != 200:
             logging.warning(f"Groq Cloud request failed: {response.status_code} {response.text}")
@@ -455,9 +457,28 @@ def query_groq_ai(text, used_lang):
             logging.warning(f"Groq Cloud response missing output: {result}")
             return None, session_context, False
 
-        answer = "\n".join([str(item).strip() for item in output if str(item).strip()])
+        answer_parts = []
+        for item in output:
+            if isinstance(item, dict):
+                for content in item.get("content", []):
+                    if isinstance(content, dict) and content.get("type") in ("output_text", "reasoning_text"):
+                        text = content.get("text")
+                        if text:
+                            answer_parts.append(text.strip())
+                    elif isinstance(content, str):
+                        answer_parts.append(content.strip())
+        answer = "\n".join([part for part in answer_parts if part])
         if not answer:
-            logging.warning(f"Groq Cloud returned empty output list: {result}")
+            # Last resort: try OpenAI-style chat completion format
+            choices = result.get("choices") or []
+            for choice in choices:
+                message = choice.get("message") or {}
+                content = message.get("content")
+                if isinstance(content, str):
+                    answer_parts.append(content.strip())
+            answer = "\n".join([part for part in answer_parts if part])
+        if not answer:
+            logging.warning(f"Groq Cloud returned empty response data: {result}")
             return None, session_context, False
 
         if session_context is None:
