@@ -5,6 +5,7 @@ import threading
 import traceback
 import locale
 import platform
+import socket
 import time as pytime
 from datetime import datetime
 import speech_recognition as sr
@@ -30,7 +31,7 @@ USE_OPENAI = False
 SCRIPT_UPDATE_URL = 'https://github.com/adibenishay86/aibox-public/blob/main/ai_box.py'
 VERSION_URL = 'https://github.com/adibenishay86/aibox-public/blob/main/version.txt'
 
-LOCAL_VERSION = "1.0.35"
+LOCAL_VERSION = "1.0.36"
 UPDATE_CHECK_INTERVAL = 300
 SESSION_EXPIRE = 300
 REST_API_PORT = 5000
@@ -82,10 +83,14 @@ if os.path.exists(env_file):
                     os.environ[key] = value
 GOOGLE_API_KEY = "AIzaSyDRbvvpXAd6AcYZrVcbzLRI26zNcBSjqa8"
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL = "groq-1.5-mini"
+GROQ_API_URL = f"https://api.groqcloud.com/v1/models/{GROQ_MODEL}/completions"
 
 # Debugging environment variables
 logging.info(f"GOOGLE_API_KEY from environment: {os.getenv('GOOGLE_API_KEY')}")
 logging.info(f"GITHUB_TOKEN from environment: {os.getenv('GITHUB_TOKEN')}")
+logging.info(f"GROQ_API_KEY is set via environment: {bool(os.getenv('GROQ_API_KEY'))}")
 
 # Initialize Google Gemini client (optional fallback / not used for agy CLI)
 genai_client = None
@@ -372,6 +377,103 @@ def get_system_context_message():
     return context_msg
 
 
+def get_diagnostics():
+    groq_enabled = bool(GROQ_API_KEY)
+    agy_path = "/home/rnela/.local/bin/agy"
+    agy_available = os.path.exists(agy_path)
+    try:
+        groq_connectivity = "reachable"
+        with socket.create_connection(("api.groqcloud.com", 443), timeout=5):
+            pass
+    except Exception as e:
+        groq_connectivity = f"unreachable: {e}"
+
+    diag = {
+        "local_version": LOCAL_VERSION,
+        "python_version": platform.python_version(),
+        "flask_port": REST_API_PORT,
+        "use_openai": USE_OPENAI,
+        "groq_api_key_present": groq_enabled,
+        "groq_model": GROQ_MODEL,
+        "groq_api_url": GROQ_API_URL,
+        "groq_connectivity": groq_connectivity,
+        "agy_path": agy_path,
+        "agy_available": agy_available,
+        "model_priority": MODEL_PRIORITY,
+        "last_interaction": last_interaction,
+        "session_context_turns": len(session_context) if session_context else 0,
+        "languages": LANGUAGES,
+        "tts_lang": TTS_LANG,
+        "button_poll_interval": BUTTON_POLL_INTERVAL,
+        "update_check_interval": UPDATE_CHECK_INTERVAL,
+        "google_api_key_present": bool(GOOGLE_API_KEY),
+    }
+    return diag
+
+
+def query_groq_ai(text, used_lang):
+    global session_context
+    if not GROQ_API_KEY:
+        logging.warning("Groq Cloud API key is missing, skipping Groq query.")
+        return None, session_context, False
+
+    try:
+        use_continue = (session_context is not None and len(session_context) > 0)
+        if not use_continue:
+            system_context_text = get_system_context_message()
+            prompt = (
+                f"system context and previous questions context is: {system_context_text}\n"
+                f"The following message is the current user query to answer. "
+                f"Please answer it directly in the same language : {used_lang}.\n"
+                f"Please respond with plain text suitable for text-to-speech synthesis. Avoid special characters, emojis, or formatting. "
+                f"Use only textual characters and numbers, no asterisks or bullets.\n"
+                f"the question is: {text.strip()}"
+            )
+        else:
+            prompt = text.strip()
+
+        payload = {
+            "input": prompt,
+            "max_output_tokens": 512,
+            "temperature": 0.2,
+            "top_p": 0.95,
+        }
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json",
+        }
+
+        logging.info("Querying Groq Cloud as first priority")
+        response = requests.post(GROQ_API_URL, json=payload, headers=headers, timeout=30)
+        if response.status_code != 200:
+            logging.warning(f"Groq Cloud request failed: {response.status_code} {response.text}")
+            return None, session_context, False
+
+        result = response.json()
+        output = result.get("output")
+        if not output:
+            logging.warning(f"Groq Cloud response missing output: {result}")
+            return None, session_context, False
+
+        answer = "\n".join([str(item).strip() for item in output if str(item).strip()])
+        if not answer:
+            logging.warning(f"Groq Cloud returned empty output list: {result}")
+            return None, session_context, False
+
+        if session_context is None:
+            session_context = []
+        session_context.append({"parts": [{"text": text}], "role": "user"})
+        session_context.append({"parts": [{"text": answer}], "role": "model"})
+        if len(session_context) > MAX_CONTEXT_TURNS:
+            session_context = session_context[-MAX_CONTEXT_TURNS:]
+
+        logging.info(f"Groq Cloud success. Answer: \"{answer}\"")
+        return answer, session_context, True
+    except Exception as e:
+        log_error("Groq Cloud query failed", e)
+        return None, session_context, False
+
+
 def query_google_ai(text, used_lang):
     global session_context
     try:
@@ -465,8 +567,12 @@ def query_ai(text, used_lang):
     if USE_OPENAI:
         # OpenAI branch placeholder
         pass
-    else:
-        return query_google_ai(text, used_lang)
+
+    answer, session_context, groq_success = query_groq_ai(text, used_lang)
+    if groq_success:
+        return answer, session_context
+
+    return query_google_ai(text, used_lang)
 
 
 def speak_text(text, lang):
@@ -600,6 +706,15 @@ def simulate_button():
     except Exception as e:
         log_error("simulate_button", e)
         return jsonify({'answer': "Error occurred!"}), 500
+
+
+@app.route('/diagnostics', methods=['GET'])
+def diagnostics():
+    try:
+        return jsonify(get_diagnostics())
+    except Exception as e:
+        log_error("diagnostics endpoint", e)
+        return jsonify({'error': 'Diagnostics failed', 'details': str(e)}), 500
 
 
 def run_flask():
