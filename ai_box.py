@@ -30,7 +30,7 @@ USE_OPENAI = False
 SCRIPT_UPDATE_URL = 'https://github.com/adibenishay86/aibox-public/blob/main/ai_box.py'
 VERSION_URL = 'https://github.com/adibenishay86/aibox-public/blob/main/version.txt'
 
-LOCAL_VERSION = "1.0.34"
+LOCAL_VERSION = "1.0.35"
 UPDATE_CHECK_INTERVAL = 300
 SESSION_EXPIRE = 300
 REST_API_PORT = 5000
@@ -49,7 +49,11 @@ MODEL_PRIORITY = [
     "Gemini 3.5 Flash (Medium)",
     "Gemini 3.5 Flash (Low)",
 ]
+QUOTA_CACHE_TTL = 3600  # Skip exhausted models for 1 hour
 # ============================
+
+# Cache of exhausted models: {model_name: timestamp_when_exhausted}
+exhausted_models = {}
 
 logging.basicConfig(
     filename=LOG_FILENAME,
@@ -390,7 +394,20 @@ def query_google_ai(text, used_lang):
             prompt = text.strip()
         
         # Try each model in priority order, falling back on quota exhaustion
+        now = time.time()
         for model_index, model_name in enumerate(MODEL_PRIORITY):
+            # Skip models that are cached as exhausted
+            if model_name in exhausted_models:
+                cached_at = exhausted_models[model_name]
+                if now - cached_at < QUOTA_CACHE_TTL:
+                    remaining = int(QUOTA_CACHE_TTL - (now - cached_at))
+                    logging.info(f"Skipping model '{model_name}' — quota cached as exhausted ({remaining}s remaining)")
+                    continue
+                else:
+                    # Cache expired, remove and retry this model
+                    del exhausted_models[model_name]
+                    logging.info(f"Model '{model_name}' quota cache expired, retrying...")
+            
             logging.info(f"Querying agy CLI with model '{model_name}' (continue={use_continue}, attempt {model_index + 1}/{len(MODEL_PRIORITY)}) prompt: '{prompt[:100]}...'")
             
             # Build command with model flag
@@ -402,9 +419,10 @@ def query_google_ai(text, used_lang):
             
             combined_output = (res.stderr or "") + (res.stdout or "")
             
-            # Check for quota exhaustion — try next model
+            # Check for quota exhaustion — cache and try next model
             if "RESOURCE_EXHAUSTED" in combined_output or "quota" in combined_output.lower():
-                logging.warning(f"Model '{model_name}' quota exhausted, trying next model...")
+                exhausted_models[model_name] = now
+                logging.warning(f"Model '{model_name}' quota exhausted, cached for {QUOTA_CACHE_TTL}s. Trying next model...")
                 continue
             
             if res.returncode != 0:
@@ -418,9 +436,10 @@ def query_google_ai(text, used_lang):
                 
             answer = res.stdout.strip()
             
-            # If answer is empty, the model might have silently failed — try next
+            # If answer is empty, the model might have silently failed — cache and try next
             if not answer:
-                logging.warning(f"Model '{model_name}' returned empty response, trying next model...")
+                exhausted_models[model_name] = now
+                logging.warning(f"Model '{model_name}' returned empty response, cached for {QUOTA_CACHE_TTL}s. Trying next model...")
                 continue
             
             # Success — keep local session context for --continue
