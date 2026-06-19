@@ -420,18 +420,22 @@ def query_groq_ai(text, used_lang):
 
     try:
         use_continue = (session_context is not None and len(session_context) > 0)
+        language_label = "Hebrew" if used_lang.startswith("he") else "English"
+        language_instruction = (
+            f"Please answer the following user query directly in the same language as the input "
+            f"({language_label}). If the question is in Hebrew, reply in Hebrew. If the question is in English, reply in English.\n"
+            f"Please respond with plain text suitable for text-to-speech synthesis. Avoid special characters, emojis, or formatting. "
+            f"Use only textual characters and numbers, no asterisks or bullets.\n"
+        )
         if not use_continue:
             system_context_text = get_system_context_message()
             prompt = (
                 f"system context and previous questions context is: {system_context_text}\n"
-                f"The following message is the current user query to answer. "
-                f"Please answer it directly in the same language : {used_lang}.\n"
-                f"Please respond with plain text suitable for text-to-speech synthesis. Avoid special characters, emojis, or formatting. "
-                f"Use only textual characters and numbers, no asterisks or bullets.\n"
+                f"The following message is the current user query to answer. {language_instruction}"
                 f"the question is: {text.strip()}"
             )
         else:
-            prompt = text.strip()
+            prompt = f"{language_instruction}the question is: {text.strip()}"
 
         payload = {
             "model": GROQ_MODEL,
@@ -502,19 +506,23 @@ def query_google_ai(text, used_lang):
         use_continue = (session_context is not None and len(session_context) > 0)
         
         # Prepare the query text
+        language_label = "Hebrew" if used_lang.startswith("he") else "English"
+        language_instruction = (
+            f"Please answer the following user query directly in the same language as the input "
+            f"({language_label}). If the question is in Hebrew, reply in Hebrew. If the question is in English, reply in English.\n"
+            f"Please respond with plain text suitable for text-to-speech synthesis. Avoid special characters, emojis, or formatting. "
+            f"Use only textual characters and numbers, no asterisks or bullets.\n"
+        )
         # If starting a new session, we can prefix it with system context
         if not use_continue:
             system_context_text = get_system_context_message()
             prompt = (
                 f"system context and previous questions context is: {system_context_text}\n"
-                f"The following message is the current user query to answer. "
-                f"Please answer it directly in the same language : {used_lang}.\n"
-                f"Please respond with plain text suitable for text-to-speech synthesis. Avoid special characters, emojis, or formatting. "
-                f"Use only textual characters and numbers, no asterisks or bullets.\n"
+                f"The following message is the current user query to answer. {language_instruction}"
                 f"the question is: {text.strip()}"
             )
         else:
-            prompt = text.strip()
+            prompt = f"{language_instruction}the question is: {text.strip()}"
         
         # Try each model in priority order, falling back on quota exhaustion
         now = time.time()
@@ -709,7 +717,9 @@ def rest_query():
         data = request.get_json(force=True)
         user_text = data.get('text', '')
         logging.info(f"Received query via REST: {user_text}")
-        user_lang = 'he-IL'
+        user_lang = detect_language_from_text(user_text) if user_text else 'en-US'
+        if not user_lang:
+            user_lang = 'en-US'
         answer = process_text_query(user_text, user_lang, source="REST")
         return jsonify({'answer': answer})
     except Exception as e:
