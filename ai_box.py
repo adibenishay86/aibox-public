@@ -30,7 +30,7 @@ USE_OPENAI = False
 SCRIPT_UPDATE_URL = 'https://github.com/adibenishay86/aibox-public/blob/main/ai_box.py'
 VERSION_URL = 'https://github.com/adibenishay86/aibox-public/blob/main/version.txt'
 
-LOCAL_VERSION = "1.0.31"
+LOCAL_VERSION = "1.0.32"
 UPDATE_CHECK_INTERVAL = 300
 SESSION_EXPIRE = 300
 REST_API_PORT = 5000
@@ -373,7 +373,6 @@ def query_google_ai(text, used_lang):
         # Run agy command
         cmd = [
             "/home/rnela/.local/bin/agy",
-            "--model", "gemini-3.5-flash-lite",
             "--dangerously-skip-permissions",
             "--print", prompt
         ]
