@@ -421,28 +421,21 @@ def query_groq_ai(text, used_lang):
     try:
         use_continue = (session_context is not None and len(session_context) > 0)
         language_label = "Hebrew" if used_lang.startswith("he") else "English"
-        language_instruction = (
-            f"Please answer the following user query directly in the same language as the input "
-            f"({language_label}). If the question is in Hebrew, reply in Hebrew. If the question is in English, reply in English.\n"
-            f"Please respond with plain text suitable for text-to-speech synthesis. Avoid special characters, emojis, or formatting. "
-            f"Use only textual characters and numbers, no asterisks or bullets.\n"
+        
+        # Simplified prompt: no reasoning preamble, direct instruction
+        prompt = (
+            f"System: You are a voice assistant. Respond in {language_label} only. "
+            f"Give a direct, concise answer. No reasoning, no explanations.\n"
+            f"User: {text.strip()}\n"
+            f"Assistant:"
         )
-        if not use_continue:
-            system_context_text = get_system_context_message()
-            prompt = (
-                f"system context and previous questions context is: {system_context_text}\n"
-                f"The following message is the current user query to answer. {language_instruction}"
-                f"the question is: {text.strip()}"
-            )
-        else:
-            prompt = f"{language_instruction}the question is: {text.strip()}"
 
         payload = {
             "model": GROQ_MODEL,
             "input": prompt,
-            "temperature": 0.2,
-            "top_p": 0.95,
-            "max_output_tokens": 512,
+            "temperature": 0.0,
+            "top_p": 0.0,
+            "max_output_tokens": 128,
         }
         headers = {
             "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -508,21 +501,21 @@ def query_google_ai(text, used_lang):
         # Prepare the query text
         language_label = "Hebrew" if used_lang.startswith("he") else "English"
         language_instruction = (
-            f"Please answer the following user query directly in the same language as the input "
-            f"({language_label}). If the question is in Hebrew, reply in Hebrew. If the question is in English, reply in English.\n"
-            f"Please respond with plain text suitable for text-to-speech synthesis. Avoid special characters, emojis, or formatting. "
-            f"Use only textual characters and numbers, no asterisks or bullets.\n"
+            f"You are a helpful assistant. Answer the user question directly in {language_label}. "
+            f"Do not repeat the instructions, do not mention the prompt, and do not restate the question. "
+            f"Use only plain text suitable for text-to-speech synthesis. Avoid special characters, emojis, or formatting. "
+            f"Use only textual characters and numbers."
         )
         # If starting a new session, we can prefix it with system context
         if not use_continue:
             system_context_text = get_system_context_message()
             prompt = (
-                f"system context and previous questions context is: {system_context_text}\n"
-                f"The following message is the current user query to answer. {language_instruction}"
-                f"the question is: {text.strip()}"
+                f"{system_context_text}\n"
+                f"{language_instruction}\n\n"
+                f"{text.strip()}"
             )
         else:
-            prompt = f"{language_instruction}the question is: {text.strip()}"
+            prompt = f"{language_instruction}\n\n{text.strip()}"
         
         # Try each model in priority order, falling back on quota exhaustion
         now = time.time()
