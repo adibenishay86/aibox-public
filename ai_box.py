@@ -422,8 +422,10 @@ def query_groq_ai(text, used_lang):
         use_continue = (session_context is not None and len(session_context) > 0)
         language_label = "Hebrew" if used_lang.startswith("he") else "English"
         
+        # Build comprehensive grounding context
+        grounding_context = get_system_context_message()
+        
         # Check if query is asking about weather and fetch real-time data
-        weather_context = ""
         if any(word in text.lower() for word in ["weather", "מזג אוויר", "טמפרטורה", "מזג", "אוויר", "תחזוקה", "סערה", "גשם"]):
             try:
                 # Use Open-Meteo free weather API for Yavne, Israel
@@ -455,23 +457,20 @@ def query_groq_ai(text, used_lang):
                         86: "snow showers", 95: "thunderstorm", 96: "thunderstorm", 99: "thunderstorm"
                     }
                     condition = weather_descriptions.get(weather_code, "varied")
-                    
-                    if used_lang.startswith("he"):
-                        weather_context = f"Real-time weather data for Yavne, Israel: Temperature {temp}°C, Humidity {humidity}%, Wind {wind} km/h, Condition: {condition}."
-                    else:
-                        weather_context = f"Real-time weather for Yavne, Israel: {temp}°C, {humidity}% humidity, {wind} km/h wind, {condition} conditions."
-                    logging.info(f"Weather API result: {weather_context}")
+                    weather_info = f"Current weather: {temp}°C, {humidity}% humidity, {wind} km/h wind, {condition}."
+                    grounding_context += f" {weather_info}"
+                    logging.info(f"Weather API result: {weather_info}")
             except Exception as e:
                 logging.warning(f"Weather API fetch failed: {e}")
         
-        # Simplified prompt with optional weather context
+        # Build prompt with grounding context
         prompt = (
             f"System: You are a voice assistant. Respond in {language_label} only. "
-            f"Give a direct, concise answer. No reasoning, no explanations."
+            f"Give a direct, concise answer. No reasoning, no explanations. "
+            f"Context: {grounding_context}\n"
+            f"User: {text.strip()}\n"
+            f"Assistant:"
         )
-        if weather_context:
-            prompt += f" {weather_context}"
-        prompt += f"\nUser: {text.strip()}\nAssistant:"
 
         payload = {
             "model": GROQ_MODEL,
@@ -541,7 +540,10 @@ def query_google_ai(text, used_lang):
         # Check if we should continue the conversation
         use_continue = (session_context is not None and len(session_context) > 0)
         
-        # Prepare the query text
+        # Build comprehensive grounding context
+        grounding_context = get_system_context_message()
+        
+        # Prepare the query text with grounding
         language_label = "Hebrew" if used_lang.startswith("he") else "English"
         language_instruction = (
             f"You are a helpful assistant. Answer the user question directly in {language_label}. "
@@ -551,9 +553,8 @@ def query_google_ai(text, used_lang):
         )
         # If starting a new session, we can prefix it with system context
         if not use_continue:
-            system_context_text = get_system_context_message()
             prompt = (
-                f"{system_context_text}\n"
+                f"Context: {grounding_context}\n"
                 f"{language_instruction}\n\n"
                 f"{text.strip()}"
             )
