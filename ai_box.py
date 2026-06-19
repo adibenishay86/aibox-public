@@ -522,13 +522,20 @@ def query_groq_ai(text, used_lang):
 
         # For Hebrew queries, extract only the Hebrew portion to remove English reasoning
         if used_lang.startswith("he"):
-            # Find the last occurrence of a Hebrew text block (marked by Hebrew Unicode range)
-            hebrew_block = ""
-            for paragraph in answer.split("\n"):
-                if any("\u0590" <= c <= "\u05FF" for c in paragraph):
-                    hebrew_block = paragraph.strip()
-            if hebrew_block:
-                answer = hebrew_block
+            # Find the line that is predominantly Hebrew (>50% Hebrew characters)
+            lines = answer.split("\n")
+            best_hebrew_line = ""
+            for line in lines:
+                if not line.strip():
+                    continue
+                hebrew_count = sum(1 for c in line if "\u0590" <= c <= "\u05FF")
+                total_chars = len([c for c in line if c.isalpha()])
+                if total_chars > 0 and hebrew_count / total_chars > 0.5:
+                    # This line is predominantly Hebrew
+                    if len(line) > len(best_hebrew_line):
+                        best_hebrew_line = line.strip()
+            if best_hebrew_line:
+                answer = best_hebrew_line
                 logging.info(f"Extracted Hebrew answer: {answer}")
 
         if session_context is None:
