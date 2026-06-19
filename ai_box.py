@@ -30,13 +30,25 @@ USE_OPENAI = False
 SCRIPT_UPDATE_URL = 'https://github.com/adibenishay86/aibox-public/blob/main/ai_box.py'
 VERSION_URL = 'https://github.com/adibenishay86/aibox-public/blob/main/version.txt'
 
-LOCAL_VERSION = "1.0.33"
+LOCAL_VERSION = "1.0.34"
 UPDATE_CHECK_INTERVAL = 300
 SESSION_EXPIRE = 300
 REST_API_PORT = 5000
 LOG_FILENAME = "ai_box.log"
 MAX_CONTEXT_TURNS = 60
 BUTTON_POLL_INTERVAL = 0.1  # seconds
+
+# Models ranked from best to worst quality for automatic fallback
+MODEL_PRIORITY = [
+    "Gemini 3.1 Pro (High)",
+    "Gemini 3.1 Pro (Low)",
+    "Claude Opus 4.6 (Thinking)",
+    "Claude Sonnet 4.6 (Thinking)",
+    "GPT-OSS 120B (Medium)",
+    "Gemini 3.5 Flash (High)",
+    "Gemini 3.5 Flash (Medium)",
+    "Gemini 3.5 Flash (Low)",
+]
 # ============================
 
 logging.basicConfig(
@@ -376,35 +388,55 @@ def query_google_ai(text, used_lang):
             )
         else:
             prompt = text.strip()
-            
-        logging.info(f"Querying local agy CLI (continue={use_continue}) with prompt: '{prompt[:100]}...'")
         
-        # Run agy command
-        cmd = ["/home/rnela/.local/bin/agy", "--print", prompt]
-        if use_continue:
-            cmd.insert(1, "--continue")
+        # Try each model in priority order, falling back on quota exhaustion
+        for model_index, model_name in enumerate(MODEL_PRIORITY):
+            logging.info(f"Querying agy CLI with model '{model_name}' (continue={use_continue}, attempt {model_index + 1}/{len(MODEL_PRIORITY)}) prompt: '{prompt[:100]}...'")
             
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+            # Build command with model flag
+            cmd = ["/home/rnela/.local/bin/agy", "--model", model_name, "--print", prompt]
+            if use_continue:
+                cmd.insert(1, "--continue")
+                
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            
+            combined_output = (res.stderr or "") + (res.stdout or "")
+            
+            # Check for quota exhaustion — try next model
+            if "RESOURCE_EXHAUSTED" in combined_output or "quota" in combined_output.lower():
+                logging.warning(f"Model '{model_name}' quota exhausted, trying next model...")
+                continue
+            
+            if res.returncode != 0:
+                err_msg = res.stderr.strip()
+                logging.error(f"agy CLI returned error code {res.returncode} with model '{model_name}': {err_msg}")
+                if "Authentication required" in combined_output:
+                    return "Please run the command 'agy' in the terminal on the Raspberry Pi once to authenticate your Google account.", session_context
+                # For non-quota errors, try the next model too
+                logging.warning(f"Model '{model_name}' failed, trying next model...")
+                continue
+                
+            answer = res.stdout.strip()
+            
+            # If answer is empty, the model might have silently failed — try next
+            if not answer:
+                logging.warning(f"Model '{model_name}' returned empty response, trying next model...")
+                continue
+            
+            # Success — keep local session context for --continue
+            if session_context is None:
+                session_context = []
+            session_context.append({"parts": [{"text": text}], "role": "user"})
+            session_context.append({"parts": [{"text": answer}], "role": "model"})
+            if len(session_context) > MAX_CONTEXT_TURNS:
+                session_context = session_context[-MAX_CONTEXT_TURNS:]
+                
+            logging.info(f"agy CLI success with model '{model_name}'. Answer: \"{answer}\"")
+            return answer, session_context
         
-        if res.returncode != 0:
-            err_msg = res.stderr.strip()
-            logging.error(f"agy CLI returned error code {res.returncode}: {err_msg}")
-            if "Authentication required" in err_msg or "Authentication required" in res.stdout:
-                return "Please run the command 'agy' in the terminal on the Raspberry Pi once to authenticate your Google account.", session_context
-            return f"Error from agy CLI: {err_msg or res.stdout.strip()}", session_context
-            
-        answer = res.stdout.strip()
-        
-        # Keep local dummy session context so we know whether to use --continue
-        if session_context is None:
-            session_context = []
-        session_context.append({"parts": [{"text": text}], "role": "user"})
-        session_context.append({"parts": [{"text": answer}], "role": "model"})
-        if len(session_context) > MAX_CONTEXT_TURNS:
-            session_context = session_context[-MAX_CONTEXT_TURNS:]
-            
-        logging.info(f"agy CLI success. Answer: \"{answer}\"")
-        return answer, session_context
+        # All models exhausted
+        logging.error("All models exhausted or returned errors.")
+        return "All AI models are currently unavailable. Please try again later.", session_context
     except Exception as e:
         log_error("agy CLI query failed", e)
         return "There was an error communicating with the local agy CLI.", session_context
