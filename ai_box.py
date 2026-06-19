@@ -371,7 +371,12 @@ def query_google_ai(text, used_lang):
         logging.info(f"Querying local agy CLI (continue={use_continue}) with prompt: '{prompt[:100]}...'")
         
         # Run agy command
-        cmd = ["/home/rnela/.local/bin/agy", "--print", prompt]
+        cmd = [
+            "/home/rnela/.local/bin/agy",
+            "--model", "gemini-3.5-flash-lite",
+            "--dangerously-skip-permissions",
+            "--print", prompt
+        ]
         if use_continue:
             cmd.insert(1, "--continue")
             
