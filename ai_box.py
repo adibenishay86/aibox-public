@@ -47,6 +47,17 @@ logging.basicConfig(
 
 recognizer = sr.Recognizer()
 recognizer.pause_threshold = 1
+
+def calibrate_microphone():
+    try:
+        logging.info("Calibrating microphone for ambient noise...")
+        with sr.Microphone() as source:
+            recognizer.adjust_for_ambient_noise(source, duration=1)
+        logging.info("Microphone calibration complete.")
+    except Exception as e:
+        logging.warning(f"Microphone calibration failed: {e}")
+
+threading.Thread(target=calibrate_microphone, daemon=True).start()
 session_context = None
 last_interaction = time.time()
 last_update_check = 0
@@ -161,26 +172,20 @@ def check_for_update():
     last_update_check = now
 
 def recognize_multilang(audio):
-    texts = []
     for lang in LANGUAGES:
         try:
+            start_rec = time.time()
             text = recognizer.recognize_google(audio, language=lang)
             if text.strip():
-                logging.info(f"Recognized ({lang}): {text}")
-                texts.append(text)
+                detected_lang = detect_language_from_text(text)
+                logging.info(f"Recognized ({lang}) in {time.time() - start_rec:.2f}s: {text}")
+                return text, detected_lang
         except sr.UnknownValueError:
             continue
         except Exception as e:
-            log_error("speech recognition", e)
+            log_error("speech recognition error", e)
             break
-
-    if not texts:
-        return "", None
-
-    chosen_text = texts[0]
-    detected_lang = detect_language_from_text(chosen_text)
-    logging.info(f"Detected language from text heuristic: {detected_lang}")
-    return chosen_text, detected_lang
+    return "", None
 
 
 # Attempt to load a TTF font that supports Hebrew
@@ -271,9 +276,13 @@ import threading
 def listen_in_background(result_container):
     try:
         with sr.Microphone() as source:
-            recognizer.adjust_for_ambient_noise(source, duration=1)
-            audio = recognizer.listen(source,timeout=2)
-        result_container['text'], result_container['used_lang'] = recognize_multilang(audio)
+            # Removed adjust_for_ambient_noise to avoid 1-second delay
+            audio = recognizer.listen(source, timeout=3)
+        start_rec_timer = time.time()
+        text, used_lang = recognize_multilang(audio)
+        logging.info(f"Speech-to-text recognition took {time.time() - start_rec_timer:.2f} seconds")
+        result_container['text'] = text
+        result_container['used_lang'] = used_lang if used_lang else LANGUAGES[0]
     except Exception as e:
         log_error("speech recognition background", e)
         result_container['text'], result_container['used_lang'] = "", LANGUAGES[0]
@@ -309,25 +318,7 @@ def listen_for_command():
 
 
 
-def recognize_multilang(audio):
-    texts = []
-    for lang in LANGUAGES:
-        try:
-            text = recognizer.recognize_google(audio, language=lang)
-            if text.strip():
-                logging.info(f"Recognized ({lang}): {text}")
-                texts.append(text)
-        except sr.UnknownValueError:
-            continue
-        except Exception as e:
-            log_error("speech recognition", e)
-            break
-    if not texts:
-        return "", None
-    chosen_text = texts[0]
-    detected_lang = detect_language_from_text(chosen_text)
-    logging.info(f"Detected language from text heuristic: {detected_lang}")
-    return chosen_text, detected_lang
+# recognize_multilang duplicate removed
 
 
 def detect_language_from_text(text):
@@ -459,10 +450,24 @@ def process_text_query(user_text, used_lang, source="unknown"):
     last_interaction = time.time()
     if user_text:
         logging.info(f"Received query from {source}: {user_text}")
+        
+        start_time = time.time()
         answer, session_context = query_ai(user_text, used_lang)
+        query_time = time.time() - start_time
+        logging.info(f"Query execution took {query_time:.2f} seconds")
+        
+        start_disp = time.time()
         display_colored_text(user_text, answer, user_color=(0, 0, 255), ai_color=(255, 0, 0))
+        disp_time = time.time() - start_disp
+        logging.info(f"Display update took {disp_time:.2f} seconds")
+        
+        start_tts = time.time()
         tts_lang = "iw" if used_lang.startswith("he") else "en"
         speak_text(answer, tts_lang)
+        tts_time = time.time() - start_tts
+        logging.info(f"TTS generation and start took {tts_time:.2f} seconds")
+        
+        logging.info(f"Total processing time: {time.time() - start_time:.2f} seconds")
         logging.info(f"AI Response to {source}: {answer}")
         return answer
     else:
