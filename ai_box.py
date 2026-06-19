@@ -85,7 +85,7 @@ GOOGLE_API_KEY = "AIzaSyDRbvvpXAd6AcYZrVcbzLRI26zNcBSjqa8"
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = "groq-1.5-mini"
-GROQ_API_URL = f"https://api.groqcloud.com/v1/models/{GROQ_MODEL}/completions"
+GROQ_API_URL = f"https://api.groq.com/v1/models/{GROQ_MODEL}/completions"
 
 # Debugging environment variables
 logging.info(f"GOOGLE_API_KEY from environment: {os.getenv('GOOGLE_API_KEY')}")
