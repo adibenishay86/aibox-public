@@ -422,13 +422,56 @@ def query_groq_ai(text, used_lang):
         use_continue = (session_context is not None and len(session_context) > 0)
         language_label = "Hebrew" if used_lang.startswith("he") else "English"
         
-        # Simplified prompt: no reasoning preamble, direct instruction
+        # Check if query is asking about weather and fetch real-time data
+        weather_context = ""
+        if any(word in text.lower() for word in ["weather", "מזג אוויר", "טמפרטורה", "מזג", "אוויר", "תחזוקה", "סערה", "גשם"]):
+            try:
+                # Use Open-Meteo free weather API for Yavne, Israel
+                import requests as req
+                weather_response = req.get(
+                    "https://api.open-meteo.com/v1/forecast",
+                    params={
+                        "latitude": 31.93,
+                        "longitude": 34.76,
+                        "current": "temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m",
+                        "temperature_unit": "celsius",
+                        "timezone": "Asia/Jerusalem"
+                    },
+                    timeout=5
+                )
+                if weather_response.status_code == 200:
+                    weather_data = weather_response.json().get("current", {})
+                    temp = weather_data.get("temperature_2m", "unknown")
+                    humidity = weather_data.get("relative_humidity_2m", "unknown")
+                    wind = weather_data.get("wind_speed_10m", "unknown")
+                    weather_code = weather_data.get("weather_code", 0)
+                    
+                    # Simple weather code to text mapping
+                    weather_descriptions = {
+                        0: "clear", 1: "partly cloudy", 2: "mostly cloudy", 3: "overcast",
+                        45: "foggy", 48: "foggy", 51: "drizzle", 53: "drizzle", 55: "drizzle",
+                        61: "rain", 63: "rain", 65: "heavy rain", 71: "snow", 73: "snow", 75: "heavy snow",
+                        77: "snow", 80: "showers", 81: "showers", 82: "heavy showers", 85: "snow showers",
+                        86: "snow showers", 95: "thunderstorm", 96: "thunderstorm", 99: "thunderstorm"
+                    }
+                    condition = weather_descriptions.get(weather_code, "varied")
+                    
+                    if used_lang.startswith("he"):
+                        weather_context = f"Real-time weather data for Yavne, Israel: Temperature {temp}°C, Humidity {humidity}%, Wind {wind} km/h, Condition: {condition}."
+                    else:
+                        weather_context = f"Real-time weather for Yavne, Israel: {temp}°C, {humidity}% humidity, {wind} km/h wind, {condition} conditions."
+                    logging.info(f"Weather API result: {weather_context}")
+            except Exception as e:
+                logging.warning(f"Weather API fetch failed: {e}")
+        
+        # Simplified prompt with optional weather context
         prompt = (
             f"System: You are a voice assistant. Respond in {language_label} only. "
-            f"Give a direct, concise answer. No reasoning, no explanations.\n"
-            f"User: {text.strip()}\n"
-            f"Assistant:"
+            f"Give a direct, concise answer. No reasoning, no explanations."
         )
+        if weather_context:
+            prompt += f" {weather_context}"
+        prompt += f"\nUser: {text.strip()}\nAssistant:"
 
         payload = {
             "model": GROQ_MODEL,
