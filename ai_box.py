@@ -26,7 +26,7 @@ USE_OPENAI = False
 SCRIPT_UPDATE_URL = 'https://github.com/adibenishay86/aibox-public/blob/main/ai_box.py'
 VERSION_URL = 'https://github.com/adibenishay86/aibox-public/blob/main/version.txt'
 
-LOCAL_VERSION = "1.0.38"
+LOCAL_VERSION = "1.0.39"
 UPDATE_CHECK_INTERVAL = 300
 SESSION_EXPIRE = 300
 REST_API_PORT = 5000
@@ -120,9 +120,6 @@ def check_for_update():
         return
     try:
         headers = {}
-        if GITHUB_TOKEN:
-            headers = {"Authorization": f"token {GITHUB_TOKEN}"}
-
         version_raw_url = 'https://raw.githubusercontent.com/adibenishay86/aibox-public/main/version.txt'
         script_raw_url = 'https://raw.githubusercontent.com/adibenishay86/aibox-public/main/ai_box.py'
 
