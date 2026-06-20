@@ -26,7 +26,7 @@ USE_OPENAI = False
 SCRIPT_UPDATE_URL = 'https://github.com/adibenishay86/aibox-public/blob/main/ai_box.py'
 VERSION_URL = 'https://github.com/adibenishay86/aibox-public/blob/main/version.txt'
 
-LOCAL_VERSION = "1.0.40"
+LOCAL_VERSION = "1.0.41"
 UPDATE_CHECK_INTERVAL = 300
 SESSION_EXPIRE = 300
 REST_API_PORT = 5000
@@ -380,7 +380,7 @@ def query_google_ai(text, used_lang):
             full_context = full_context[-MAX_CONTEXT_TURNS:]
         logging.info("about to query Google AI with the following context: %s", full_context)
         response = genai_client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash",
             contents=full_context,
             config=generate_config
         )
