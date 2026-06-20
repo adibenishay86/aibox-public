@@ -26,7 +26,7 @@ USE_OPENAI = False
 SCRIPT_UPDATE_URL = 'https://github.com/adibenishay86/aibox-public/blob/main/ai_box.py'
 VERSION_URL = 'https://github.com/adibenishay86/aibox-public/blob/main/version.txt'
 
-LOCAL_VERSION = "1.0.39"
+LOCAL_VERSION = "1.0.40"
 UPDATE_CHECK_INTERVAL = 300
 SESSION_EXPIRE = 300
 REST_API_PORT = 5000
@@ -127,8 +127,10 @@ def check_for_update():
         remote_version_resp.raise_for_status()
         remote_version = remote_version_resp.text.strip()
         logging.info(f"Remote version: {remote_version}")
-        logging.info(f"Local version: {LOCAL_VERSION}")
-        if remote_version != LOCAL_VERSION:
+        def parse_version(v):
+            return [int(x) for x in re.sub(r"[^\d.]", "", v).split(".") if x.isdigit()]
+
+        if parse_version(remote_version) > parse_version(LOCAL_VERSION):
             logging.info("New version found! Downloading update...")
 
             script_resp = requests.get(script_raw_url, headers=headers, timeout=10)
