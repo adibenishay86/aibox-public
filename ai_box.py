@@ -5,7 +5,6 @@ import threading
 import traceback
 import locale
 import platform
-import socket
 import time as pytime
 from datetime import datetime
 import speech_recognition as sr
@@ -13,12 +12,8 @@ from gtts import gTTS
 import subprocess
 from flask import Flask, request, jsonify
 import logging
-try:
-    import google.genai as genai
-    from google.genai import types
-except ImportError:
-    genai = None
-    types = None
+import google.genai as genai
+from google.genai import types
 import requests
 import re
 import ST7789
@@ -31,30 +26,14 @@ USE_OPENAI = False
 SCRIPT_UPDATE_URL = 'https://github.com/adibenishay86/aibox-public/blob/main/ai_box.py'
 VERSION_URL = 'https://github.com/adibenishay86/aibox-public/blob/main/version.txt'
 
-LOCAL_VERSION = "1.0.37"
+LOCAL_VERSION = "1.0.38"
 UPDATE_CHECK_INTERVAL = 300
 SESSION_EXPIRE = 300
 REST_API_PORT = 5000
 LOG_FILENAME = "ai_box.log"
 MAX_CONTEXT_TURNS = 60
 BUTTON_POLL_INTERVAL = 0.1  # seconds
-
-# Models ranked from best to worst quality for automatic fallback
-MODEL_PRIORITY = [
-    "Gemini 3.1 Pro (High)",
-    "Gemini 3.1 Pro (Low)",
-    "Claude Opus 4.6 (Thinking)",
-    "Claude Sonnet 4.6 (Thinking)",
-    "GPT-OSS 120B (Medium)",
-    "Gemini 3.5 Flash (High)",
-    "Gemini 3.5 Flash (Medium)",
-    "Gemini 3.5 Flash (Low)",
-]
-QUOTA_CACHE_TTL = 3600  # Skip exhausted models for 1 hour
 # ============================
-
-# Cache of exhausted models: {model_name: timestamp_when_exhausted}
-exhausted_models = {}
 
 logging.basicConfig(
     filename=LOG_FILENAME,
@@ -81,30 +60,27 @@ if os.path.exists(env_file):
                 key, value = line.strip().split("=", 1)
                 if not os.getenv(key):  # Only set if not already in the environment
                     os.environ[key] = value
-GOOGLE_API_KEY = "AIzaSyDRbvvpXAd6AcYZrVcbzLRI26zNcBSjqa8"
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = "openai/gpt-oss-20b"
-GROQ_API_BASE = "https://api.groq.com/openai/v1"
-GROQ_API_URL = f"{GROQ_API_BASE}/responses"
 
 # Debugging environment variables
 logging.info(f"GOOGLE_API_KEY from environment: {os.getenv('GOOGLE_API_KEY')}")
 logging.info(f"GITHUB_TOKEN from environment: {os.getenv('GITHUB_TOKEN')}")
-logging.info(f"GROQ_API_KEY is set via environment: {bool(os.getenv('GROQ_API_KEY'))}")
 
-# Initialize Google Gemini client (optional fallback / not used for agy CLI)
+# Initialize Google Gemini client
 genai_client = None
 grounding_tool = None
 generate_config = None
-if genai and types:
+if not GOOGLE_API_KEY:
+    logging.warning("GOOGLE_API_KEY is empty. Gemini API client will not be initialized.")
+elif GOOGLE_API_KEY.startswith("otk_"):
+    logging.warning("Using injected one-time placeholder GOOGLE_API_KEY. This is NOT a valid Google Cloud API key.")
+    logging.warning("To enable Gemini, generate a real key and set the GOOGLE_API_KEY environment variable or update the key in configuration.")
+else:
     try:
-        if GOOGLE_API_KEY.startswith("otk_"):
-            logging.warning("Using injected one-time placeholder GOOGLE_API_KEY. This is NOT a valid Google Cloud API key.")
-        else:
-            genai_client = genai.Client(api_key=GOOGLE_API_KEY)
-            grounding_tool = types.Tool(google_search=types.GoogleSearch())
-            generate_config = types.GenerateContentConfig(tools=[grounding_tool])
+        genai_client = genai.Client(api_key=GOOGLE_API_KEY)
+        grounding_tool = types.Tool(google_search=types.GoogleSearch())
+        generate_config = types.GenerateContentConfig(tools=[grounding_tool])
     except Exception as e:
         logging.warning(f"Could not initialize genai client: {e}")
 
@@ -378,285 +354,70 @@ def get_system_context_message():
     return context_msg
 
 
-def get_diagnostics():
-    groq_enabled = bool(GROQ_API_KEY)
-    agy_path = "/home/rnela/.local/bin/agy"
-    agy_available = os.path.exists(agy_path)
-    try:
-        groq_connectivity = "reachable"
-        with socket.create_connection(("api.groq.com", 443), timeout=5):
-            pass
-    except Exception as e:
-        groq_connectivity = f"unreachable: {e}"
-
-    diag = {
-        "local_version": LOCAL_VERSION,
-        "python_version": platform.python_version(),
-        "flask_port": REST_API_PORT,
-        "use_openai": USE_OPENAI,
-        "groq_api_key_present": groq_enabled,
-        "groq_model": GROQ_MODEL,
-        "groq_api_url": GROQ_API_URL,
-        "groq_connectivity": groq_connectivity,
-        "agy_path": agy_path,
-        "agy_available": agy_available,
-        "model_priority": MODEL_PRIORITY,
-        "last_interaction": last_interaction,
-        "session_context_turns": len(session_context) if session_context else 0,
-        "languages": LANGUAGES,
-        "tts_lang": TTS_LANG,
-        "button_poll_interval": BUTTON_POLL_INTERVAL,
-        "update_check_interval": UPDATE_CHECK_INTERVAL,
-        "google_api_key_present": bool(GOOGLE_API_KEY),
-    }
-    return diag
-
-
-def query_groq_ai(text, used_lang):
-    global session_context
-    if not GROQ_API_KEY:
-        logging.warning("Groq Cloud API key is missing, skipping Groq query.")
-        return None, session_context, False
-
-    try:
-        use_continue = (session_context is not None and len(session_context) > 0)
-        language_label = "Hebrew" if used_lang.startswith("he") else "English"
-        
-        # Build comprehensive grounding context
-        grounding_context = get_system_context_message()
-        
-        # Check if query is asking about weather and fetch real-time data
-        if any(word in text.lower() for word in ["weather", "מזג אוויר", "טמפרטורה", "מזג", "אוויר", "תחזוקה", "סערה", "גשם"]):
-            try:
-                # Use Open-Meteo free weather API for Yavne, Israel
-                import requests as req
-                weather_response = req.get(
-                    "https://api.open-meteo.com/v1/forecast",
-                    params={
-                        "latitude": 31.93,
-                        "longitude": 34.76,
-                        "current": "temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m",
-                        "temperature_unit": "celsius",
-                        "timezone": "Asia/Jerusalem"
-                    },
-                    timeout=5
-                )
-                if weather_response.status_code == 200:
-                    weather_data = weather_response.json().get("current", {})
-                    temp = weather_data.get("temperature_2m", "unknown")
-                    humidity = weather_data.get("relative_humidity_2m", "unknown")
-                    wind = weather_data.get("wind_speed_10m", "unknown")
-                    weather_code = weather_data.get("weather_code", 0)
-                    
-                    # Simple weather code to text mapping
-                    weather_descriptions = {
-                        0: "clear", 1: "partly cloudy", 2: "mostly cloudy", 3: "overcast",
-                        45: "foggy", 48: "foggy", 51: "drizzle", 53: "drizzle", 55: "drizzle",
-                        61: "rain", 63: "rain", 65: "heavy rain", 71: "snow", 73: "snow", 75: "heavy snow",
-                        77: "snow", 80: "showers", 81: "showers", 82: "heavy showers", 85: "snow showers",
-                        86: "snow showers", 95: "thunderstorm", 96: "thunderstorm", 99: "thunderstorm"
-                    }
-                    condition = weather_descriptions.get(weather_code, "varied")
-                    weather_info = f"Current weather: {temp}°C, {humidity}% humidity, {wind} km/h wind, {condition}."
-                    grounding_context += f" {weather_info}"
-                    logging.info(f"Weather API result: {weather_info}")
-            except Exception as e:
-                logging.warning(f"Weather API fetch failed: {e}")
-        
-        # Build prompt with grounding context
-        prompt = (
-            f"System: You are a voice assistant. Respond in {language_label} only. "
-            f"Give a direct, concise answer. No reasoning, no explanations. "
-            f"Context: {grounding_context}\n"
-            f"User: {text.strip()}\n"
-            f"Assistant:"
-        )
-
-        payload = {
-            "model": GROQ_MODEL,
-            "input": prompt,
-            "temperature": 0.0,
-            "top_p": 0.0,
-            "max_output_tokens": 128,
-        }
-        headers = {
-            "Authorization": f"Bearer {GROQ_API_KEY}",
-            "Content-Type": "application/json",
-        }
-
-        logging.info(f"Querying Groq Cloud URL {GROQ_API_URL} as first priority")
-        response = requests.post(GROQ_API_URL, json=payload, headers=headers, timeout=30)
-        if response.status_code != 200:
-            logging.warning(f"Groq Cloud request failed: {response.status_code} {response.text}")
-            return None, session_context, False
-
-        result = response.json()
-        output = result.get("output")
-        if not output:
-            logging.warning(f"Groq Cloud response missing output: {result}")
-            return None, session_context, False
-
-        answer_parts = []
-        for item in output:
-            if isinstance(item, dict):
-                for content in item.get("content", []):
-                    if isinstance(content, dict) and content.get("type") in ("output_text", "reasoning_text"):
-                        text = content.get("text")
-                        if text:
-                            answer_parts.append(text.strip())
-                    elif isinstance(content, str):
-                        answer_parts.append(content.strip())
-        answer = "\n".join([part for part in answer_parts if part])
-        if not answer:
-            # Last resort: try OpenAI-style chat completion format
-            choices = result.get("choices") or []
-            for choice in choices:
-                message = choice.get("message") or {}
-                content = message.get("content")
-                if isinstance(content, str):
-                    answer_parts.append(content.strip())
-            answer = "\n".join([part for part in answer_parts if part])
-        if not answer:
-            logging.warning(f"Groq Cloud returned empty response data: {result}")
-            return None, session_context, False
-
-        # For Hebrew queries, extract only the Hebrew portion to remove English reasoning
-        if used_lang.startswith("he"):
-            # Find the line that is predominantly Hebrew (>50% Hebrew characters)
-            lines = answer.split("\n")
-            best_hebrew_line = ""
-            for line in lines:
-                if not line.strip():
-                    continue
-                hebrew_count = sum(1 for c in line if "\u0590" <= c <= "\u05FF")
-                total_chars = len([c for c in line if c.isalpha()])
-                if total_chars > 0 and hebrew_count / total_chars > 0.5:
-                    # This line is predominantly Hebrew
-                    if len(line) > len(best_hebrew_line):
-                        best_hebrew_line = line.strip()
-            if best_hebrew_line:
-                answer = best_hebrew_line
-                logging.info(f"Extracted Hebrew answer: {answer}")
-
-        if session_context is None:
-            session_context = []
-        session_context.append({"parts": [{"text": text}], "role": "user"})
-        session_context.append({"parts": [{"text": answer}], "role": "model"})
-        if len(session_context) > MAX_CONTEXT_TURNS:
-            session_context = session_context[-MAX_CONTEXT_TURNS:]
-
-        logging.info(f"Groq Cloud success. Answer: \"{answer}\"")
-        return answer, session_context, True
-    except Exception as e:
-        log_error("Groq Cloud query failed", e)
-        return None, session_context, False
-
-
 def query_google_ai(text, used_lang):
     global session_context
     try:
-        # Check if we should continue the conversation
-        use_continue = (session_context is not None and len(session_context) > 0)
-        
-        # Build comprehensive grounding context
-        grounding_context = get_system_context_message()
-        
-        # Prepare the query text with grounding
-        language_label = "Hebrew" if used_lang.startswith("he") else "English"
-        language_instruction = (
-            f"You are a helpful assistant. Answer the user question directly in {language_label}. "
-            f"Do not repeat the instructions, do not mention the prompt, and do not restate the question. "
-            f"Use only plain text suitable for text-to-speech synthesis. Avoid special characters, emojis, or formatting. "
-            f"Use only textual characters and numbers."
+        system_context_text = get_system_context_message()
+        if not session_context:
+            session_context = []
+        full_context = [
+            {"parts": [{"text": "system context and previous questions context is: "+system_context_text}], "role": "user"}
+        ]
+        full_context.extend(session_context)
+        full_context.append({
+            "parts": [
+                {"text": (
+                    "The following message is the current user query to answer. "
+                    "Please answer it directly in the same language : "+used_lang +
+                    ". Use the previous text as context."
+                    + "Please respond with plain text suitable for text-to-speech synthesis. Avoid special characters, emojis, or formatting"
+                    + "use only textual characters and numbers, no asterisks or bullets"
+                )}
+            ],
+            "role": "user"
+        })
+        full_context.append({"parts": [{"text": "the question is: " + text.strip()}], "role": "user"})
+        if len(full_context) > MAX_CONTEXT_TURNS:
+            full_context = full_context[-MAX_CONTEXT_TURNS:]
+        logging.info("about to query Google AI with the following context: %s", full_context)
+        response = genai_client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=full_context,
+            config=generate_config
         )
-        # If starting a new session, we can prefix it with system context
-        if not use_continue:
-            prompt = (
-                f"Context: {grounding_context}\n"
-                f"{language_instruction}\n\n"
-                f"{text.strip()}"
-            )
-        else:
-            prompt = f"{language_instruction}\n\n{text.strip()}"
-        
-        # Try each model in priority order, falling back on quota exhaustion
-        now = time.time()
-        for model_index, model_name in enumerate(MODEL_PRIORITY):
-            # Skip models that are cached as exhausted
-            if model_name in exhausted_models:
-                cached_at = exhausted_models[model_name]
-                if now - cached_at < QUOTA_CACHE_TTL:
-                    remaining = int(QUOTA_CACHE_TTL - (now - cached_at))
-                    logging.info(f"Skipping model '{model_name}' — quota cached as exhausted ({remaining}s remaining)")
-                    continue
-                else:
-                    # Cache expired, remove and retry this model
-                    del exhausted_models[model_name]
-                    logging.info(f"Model '{model_name}' quota cache expired, retrying...")
-            
-            logging.info(f"Querying agy CLI with model '{model_name}' (continue={use_continue}, attempt {model_index + 1}/{len(MODEL_PRIORITY)}) prompt: '{prompt[:100]}...'")
-            
-            # Build command with model flag
-            cmd = ["/home/rnela/.local/bin/agy", "--model", model_name, "--print", prompt]
-            if use_continue:
-                cmd.insert(1, "--continue")
-                
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-            
-            combined_output = (res.stderr or "") + (res.stdout or "")
-            
-            # Check for quota exhaustion — cache and try next model
-            if "RESOURCE_EXHAUSTED" in combined_output or "quota" in combined_output.lower():
-                exhausted_models[model_name] = now
-                logging.warning(f"Model '{model_name}' quota exhausted, cached for {QUOTA_CACHE_TTL}s. Trying next model...")
+        answer = response.text.strip()
+        new_session_context = []
+        for entry in full_context:
+            text_parts = entry["parts"][0]["text"].lower()
+            if (
+                "the following message is the current user query to answer" in text_parts
+            ):
                 continue
-            
-            if res.returncode != 0:
-                err_msg = res.stderr.strip()
-                logging.error(f"agy CLI returned error code {res.returncode} with model '{model_name}': {err_msg}")
-                if "Authentication required" in combined_output:
-                    return "Please run the command 'agy' in the terminal on the Raspberry Pi once to authenticate your Google account.", session_context
-                # For non-quota errors, try the next model too
-                logging.warning(f"Model '{model_name}' failed, trying next model...")
+            if text_parts.startswith(
+                "system context and previous questions context is:"
+            ):
                 continue
-                
-            answer = res.stdout.strip()
-            
-            # If answer is empty, the model might have silently failed — cache and try next
-            if not answer:
-                exhausted_models[model_name] = now
-                logging.warning(f"Model '{model_name}' returned empty response, cached for {QUOTA_CACHE_TTL}s. Trying next model...")
-                continue
-            
-            # Success — keep local session context for --continue
-            if session_context is None:
-                session_context = []
-            session_context.append({"parts": [{"text": text}], "role": "user"})
-            session_context.append({"parts": [{"text": answer}], "role": "model"})
-            if len(session_context) > MAX_CONTEXT_TURNS:
-                session_context = session_context[-MAX_CONTEXT_TURNS:]
-                
-            logging.info(f"agy CLI success with model '{model_name}'. Answer: \"{answer}\"")
-            return answer, session_context
-        
-        # All models exhausted
-        logging.error("All models exhausted or returned errors.")
-        return "All AI models are currently unavailable. Please try again later.", session_context
+            if entry["role"] == "user":
+                new_session_context.append(entry)
+            elif entry["role"] == "model":
+                new_session_context.append(entry)
+        new_session_context.append({"parts": [{"text": answer}], "role": "model"})
+        session_context = new_session_context[-MAX_CONTEXT_TURNS:]
+        logging.info(
+            f"Google Gemini AI Query cleaned session saving: \"{text}\" | Answer: \"{answer}\""
+        )
+        return answer, session_context
     except Exception as e:
-        log_error("agy CLI query failed", e)
-        return "There was an error communicating with the local agy CLI.", session_context
+        log_error("Google Gemini AI SDK with grounding (explicit instruction)", e)
+        return "There was an error with Google Gemini AI service.", session_context
 
 
 def query_ai(text, used_lang):
     if USE_OPENAI:
         # OpenAI branch placeholder
         pass
-
-    answer, session_context, groq_success = query_groq_ai(text, used_lang)
-    if groq_success:
-        return answer, session_context
-
-    return query_google_ai(text, used_lang)
+    else:
+        return query_google_ai(text, used_lang)
 
 
 def speak_text(text, lang):
@@ -772,9 +533,7 @@ def rest_query():
         data = request.get_json(force=True)
         user_text = data.get('text', '')
         logging.info(f"Received query via REST: {user_text}")
-        user_lang = detect_language_from_text(user_text) if user_text else 'en-US'
-        if not user_lang:
-            user_lang = 'en-US'
+        user_lang = 'he-IL'
         answer = process_text_query(user_text, user_lang, source="REST")
         return jsonify({'answer': answer})
     except Exception as e:
@@ -792,15 +551,6 @@ def simulate_button():
     except Exception as e:
         log_error("simulate_button", e)
         return jsonify({'answer': "Error occurred!"}), 500
-
-
-@app.route('/diagnostics', methods=['GET'])
-def diagnostics():
-    try:
-        return jsonify(get_diagnostics())
-    except Exception as e:
-        log_error("diagnostics endpoint", e)
-        return jsonify({'error': 'Diagnostics failed', 'details': str(e)}), 500
 
 
 def run_flask():
